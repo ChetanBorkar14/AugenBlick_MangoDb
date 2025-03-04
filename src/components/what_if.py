@@ -1,96 +1,217 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from typing import Tuple, List, Dict, Any
 
-def what_if_simulation(data: pd.DataFrame, modifications: dict) -> pd.DataFrame:
-    """
-    Returns a modified copy of 'data' with columns updated according to 'modifications'.
-    """
-    modified_data = data.copy()
-    for parameter, value in modifications.items():
-        # Try to convert the user input to the same dtype as original
-        # (especially useful for numeric vs. string columns)
-        try:
-            modified_data[parameter] = modified_data[parameter].astype(type(value)).apply(lambda _: value)
-        except:
-            # If conversion fails, just set them as is (string fallback)
-            modified_data[parameter] = str(value)
-    return modified_data
+def load_dataset(filepath: str) -> pd.DataFrame:
+    """Load and prepare the diabetes dataset"""
+    try:
+        df = pd.read_csv(filepath)
+        required_cols = [
+            'Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness',
+            'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age', 'Outcome'
+        ]
+        
+        # Verify required columns
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            st.error(f"Missing required columns: {missing_cols}")
+            return pd.DataFrame()
+        
+        # Display dataset info
+        st.sidebar.info(f"""
+        📊 Dataset Statistics:
+        - Total samples: {len(df)}
+        - Average Glucose: {df['Glucose'].mean():.1f}
+        - Diabetes cases: {df['Outcome'].sum()}
+        - Non-diabetes cases: {len(df) - df['Outcome'].sum()}
+        """)
+        
+        return df
+        
+    except Exception as e:
+        st.error(f"Error loading dataset: {str(e)}")
+        return pd.DataFrame()
+
+def display_dataset_info(data: pd.DataFrame):
+    """Display detailed dataset statistics"""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Dataset Analysis")
+    
+    stats = data.describe()
+    metrics = ['Glucose', 'BMI', 'Age']
+    
+    for col in metrics:
+        st.sidebar.write(f"**{col}:**")
+        st.sidebar.write(f"- Mean: {stats[col]['mean']:.1f}")
+        st.sidebar.write(f"- Range: {stats[col]['min']:.1f} - {stats[col]['max']:.1f}")
+
+@st.cache_data
+def train_model(data: pd.DataFrame,
+               features: List[str],
+               target_col: str = "Outcome") -> Tuple[Any, Any, Any]:
+    """Train and cache prediction models"""
+    try:
+        # Scale features
+        scaler = StandardScaler().fit(data[features])
+        X = scaler.transform(data[features])
+        y = data[target_col]
+        
+        # Train models
+        model_logistic = LogisticRegression(random_state=42).fit(X, y)
+        model_rf = RandomForestClassifier(random_state=42).fit(X, y)
+        
+        return scaler, model_logistic, model_rf
+    except Exception as e:
+        st.error(f"Error training models: {str(e)}")
+        raise
 
 def display_what_if_interface(data: pd.DataFrame):
-    """
-    Streamlit interface for a What-If scenario simulation:
-      - Automatically includes all columns for user input
-      - Generates distribution plots for numeric columns
-      - Compares original vs. simulated data
-    """
-    st.title("🔍 What-If Scenario Simulation")
+    """Main interface for What-If scenario simulation"""
+    st.title("🏥 Diabetes Risk What-If Analysis")
+    
+    if data.empty:
+        st.error("Please provide a valid diabetes dataset")
+        return
+
+    # Define features for prediction
+    features = [
+        'Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness',
+        'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age'
+    ]
+    
+    try:
+        # Model settings
+        st.sidebar.header("Model Settings")
+        model_type = st.sidebar.selectbox(
+            "Model Type",
+            options=["logistic", "rf"],
+            format_func=lambda x: "Logistic Regression" if x == "logistic" else "Random Forest",
+            index=0
+        )
+        
+        n_bootstrap = st.sidebar.number_input(
+            "Bootstrap Iterations",
+            min_value=100,
+            max_value=2000,
+            value=500,
+            step=100
+        )
+
+        # Patient characteristics input
+        st.subheader("Adjust Patient Characteristics")
+        col1, col2 = st.columns(2)
+        
+        feature_values = {}
+        for i, col in enumerate(features):
+            with col1 if i % 2 == 0 else col2:
+                min_val = float(data[col].min())
+                max_val = float(data[col].max())
+                default_val = float(data[col].mean())
+                feature_values[col] = st.number_input(
+                    f"{col}",
+                    min_value=min_val,
+                    max_value=max_val,
+                    value=default_val,
+                    format="%.1f"
+                )
+
+        # Prediction button
+        if st.button("Predict Diabetes Risk", type="primary"):
+            with st.spinner("Analyzing..."):
+                scaler, model_logistic, model_rf = train_model(
+                    data,
+                    features
+                )
+                
+                model = model_logistic if model_type == "logistic" else model_rf
+                
+                # Prepare prediction data
+                X_pred = pd.DataFrame([feature_values])
+                X_pred_scaled = scaler.transform(X_pred)
+                
+                # Make prediction
+                predicted_prob = model.predict_proba(X_pred_scaled)[0, 1]
+                st.success(f"Predicted Diabetes Risk: {predicted_prob:.1%}")
+                
+                # Feature importance
+                if model_type == "rf":
+                    importances = pd.DataFrame({
+                        'Feature': features,
+                        'Importance': model.feature_importances_
+                    }).sort_values('Importance', ascending=False)
+                    
+                    st.write("### Feature Importance")
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    sns.barplot(data=importances, x='Importance', y='Feature')
+                    st.pyplot(fig)
+                
+                # Bootstrap analysis
+                if n_bootstrap > 0:
+                    with st.spinner("Calculating confidence intervals..."):
+                        outcomes = []
+                        progress_bar = st.progress(0)
+                        
+                        for i in range(n_bootstrap):
+                            bootstrap_sample = data.sample(n=len(data), replace=True)
+                            _, model_bs, _ = train_model(
+                                bootstrap_sample,
+                                features
+                            )
+                            pred = model_bs.predict_proba(X_pred_scaled)[0, 1]
+                            outcomes.append(pred)
+                            progress_bar.progress((i + 1) / n_bootstrap)
+                        
+                        outcomes = np.array(outcomes)
+                        ci_lower, ci_upper = np.percentile(outcomes, [2.5, 97.5])
+                        
+                        st.write(f"95% Confidence Interval: ({ci_lower:.1%}, {ci_upper:.1%})")
+                        
+                        # Plot distribution
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        sns.histplot(outcomes, kde=True, ax=ax)
+                        ax.set_title("Bootstrap Distribution of Predicted Risk")
+                        ax.set_xlabel("Predicted Diabetes Risk")
+                        ax.set_ylabel("Count")
+                        st.pyplot(fig)
+
+    except Exception as e:
+        st.error(f"An error occurred: {str(e)}")
+        st.error("Please check your data format and try again")
+        raise
+
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="Diabetes Risk Prediction",
+        page_icon="🏥",
+        layout="wide"
+    )
+    
     st.markdown("""
-    Adjust the values below to simulate how changes in each column might affect the dataset.
-    Once you click **Run Simulation**, you'll see how these modifications change the data distribution 
-    and summary statistics.
+    # 🏥 Diabetes Risk Prediction Tool
+    This tool predicts diabetes risk based on patient characteristics.
+    
+    ### Required Dataset Columns:
+    - Pregnancies
+    - Glucose
+    - BloodPressure
+    - SkinThickness
+    - Insulin
+    - BMI
+    - DiabetesPedigreeFunction
+    - Age
+    - Outcome (0 or 1)
     """)
-
-    # 1. Build 'modifications' dict for all columns
-    modifications = {}
-    st.write("### Adjust Parameters")
-    for col in data.columns:
-        # Numeric columns: use mean as default
-        if pd.api.types.is_numeric_dtype(data[col]):
-            default_value = float(data[col].mean())
-            modifications[col] = st.number_input(f"Set new value for '{col}'", value=default_value)
-        else:
-            # Non-numeric columns: use the mode (most frequent value) as default
-            default_text = str(data[col].mode().iloc[0]) if not data[col].mode().empty else ""
-            modifications[col] = st.text_input(f"Set new value for '{col}'", value=default_text)
-
-    # 2. Run the simulation
-    if st.button("Run Simulation"):
-        simulated_data = what_if_simulation(data, modifications)
-        
-        # 2A. Show simulated data preview
-        st.subheader("📊 Simulated Data (Preview)")
-        st.dataframe(simulated_data.head())
-        
-        # 2B. Display summary statistics for the simulated data
-        st.subheader("📈 Summary Statistics (Simulated Data)")
-        st.dataframe(simulated_data.describe().T)
-
-        # 2C. Compare distributions for numeric columns
-        st.subheader("📊 Distribution Comparison: Original vs. Simulated")
-        numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
-        if numeric_cols:
-            # Create subplots for each numeric column
-            ncols = 2  # 2 plots per row
-            nrows = (len(numeric_cols) + ncols - 1) // ncols
-            fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 4*nrows))
-            axes = axes.flatten() if isinstance(axes, np.ndarray) else [axes]
-
-            for i, col in enumerate(numeric_cols):
-                sns.histplot(data[col], kde=True, color='blue', label='Original', alpha=0.5, ax=axes[i])
-                sns.histplot(simulated_data[col], kde=True, color='red', label='Simulated', alpha=0.5, ax=axes[i])
-                axes[i].set_title(f"Distribution of '{col}'")
-                axes[i].legend()
-
-            # Hide extra axes if any
-            for j in range(i+1, len(axes)):
-                fig.delaxes(axes[j])
-
-            st.pyplot(fig)
-        else:
-            st.warning("No numeric columns found for plotting distributions.")
-
-        # 2D. Provide textual insights
-        st.subheader("🧐 Insights & Conclusions")
-        st.write("Below are the mean changes for each column you modified:")
-        for parameter, value in modifications.items():
-            if pd.api.types.is_numeric_dtype(data[parameter]):
-                original_mean = data[parameter].mean()
-                new_mean = simulated_data[parameter].mean()
-                st.write(f"- **{parameter}**: changed to **{value}**. Original mean: {original_mean:.2f}, New mean: {new_mean:.2f}")
-            else:
-                st.write(f"- **{parameter}**: changed to **{value}** (non-numeric).")
-        
-        st.success("Simulation complete! Review the distributions, summary stats, and insights above.")
+    
+    uploaded_file = st.file_uploader("Upload diabetes dataset (CSV)", type="csv")
+    
+    if uploaded_file is not None:
+        data = load_dataset(uploaded_file)
+        if not data.empty:
+            display_dataset_info(data)
+            display_what_if_interface(data)
