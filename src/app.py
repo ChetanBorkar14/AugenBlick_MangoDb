@@ -3,8 +3,12 @@ from components.charts import display_charts
 from components.reports import generate_reports, extract_data_from_notebook
 from components.tables import display_tables
 from components.what_if import display_what_if_interface, load_dataset, display_dataset_info
-from models.model_validation import validate_model
+from models.model_validation import validate_model, display_model_validation
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 import pandas as pd
+import numpy as np
 import os
 
 # Fix file path handling
@@ -13,20 +17,46 @@ DATA_PATH = os.path.join(BASE_DIR, "diabetes.csv")
 NOTEBOOK_PATH = os.path.join(BASE_DIR, "notebooks", "main.ipynb")
 
 def load_data(path: str) -> pd.DataFrame:
-    """Load and validate data from CSV file"""
+    """Load and validate diabetes dataset"""
     try:
         data = pd.read_csv(path)
         required_cols = [
             'Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness',
             'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age', 'Outcome'
         ]
+        
+        # Validate columns
         missing_cols = [col for col in required_cols if col not in data.columns]
         if missing_cols:
             st.error(f"Missing required columns: {missing_cols}")
             return pd.DataFrame()
+            
+        # Check data quality
+        if data.isnull().any().any():
+            st.warning("Dataset contains missing values")
+            # Fill missing values with median
+            data = data.fillna(data.median())
+            
+        # Validate outcome values
+        if not all(data['Outcome'].isin([0, 1])):
+            st.error("Outcome column must contain only binary values (0 or 1)")
+            return pd.DataFrame()
+            
+        # Display basic statistics
+        st.sidebar.info(f"""
+        📊 Dataset Info:
+        - Total samples: {len(data)}
+        - Diabetes cases: {data['Outcome'].sum()}
+        - Non-diabetes cases: {len(data) - data['Outcome'].sum()}
+        """)
+            
         return data
+        
+    except FileNotFoundError:
+        st.error(f"Dataset not found at: {path}")
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
+        st.error(f"Error loading dataset: {str(e)}")
         return pd.DataFrame()
 
 def main():
@@ -34,7 +64,7 @@ def main():
     
     st.title("🏥 Diabetes Analysis and Prediction")
     
-    # Sidebar for navigation
+    # Sidebar navigation
     st.sidebar.title("Navigation")
     options = st.sidebar.radio(
         "Select a section:",
@@ -50,6 +80,18 @@ def main():
         - **Tables**: Summary statistics and data tables
         - **What-If Simulation**: Interactive prediction tool
         - **Model Validation**: Model performance metrics
+        
+        ### Dataset Information
+        The dataset contains various health parameters used to predict diabetes:
+        - Pregnancies
+        - Glucose levels
+        - Blood Pressure
+        - Skin Thickness
+        - Insulin levels
+        - BMI (Body Mass Index)
+        - Diabetes Pedigree Function
+        - Age
+        - Outcome (0 = No Diabetes, 1 = Diabetes)
         """)
     
     elif options == "Charts":
@@ -76,8 +118,6 @@ def main():
     
     elif options == "What-If Simulation":
         st.subheader("🔮 What-If Scenario Simulation")
-        
-        # Allow both file upload and use of default dataset
         use_default = st.sidebar.checkbox("Use default dataset", value=True)
         
         if use_default:
@@ -97,13 +137,64 @@ def main():
     
     elif options == "Model Validation":
         st.subheader("✅ Model Validation")
-        data = load_data(DATA_PATH)
-        if not data.empty:
-            predictions = [0, 1, 0, 1, 0, 1, 0, 1]  # Replace with actual predictions
-            ground_truth = data['Outcome'].tolist()[:8]  # Use actual outcomes
-            validation_results = validate_model(predictions, ground_truth)
-            st.write("Model Validation Results:")
-            st.json(validation_results)
+        try:
+            data = load_data(DATA_PATH)
+            if not data.empty:
+                features = [
+                    'Pregnancies', 'Glucose', 'BloodPressure', 'SkinThickness',
+                    'Insulin', 'BMI', 'DiabetesPedigreeFunction', 'Age'
+                ]
+                
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    model_type = st.selectbox(
+                        "Select Model",
+                        options=["Logistic Regression", "Random Forest"],
+                        index=0
+                    )
+                
+                with col2:
+                    test_size = st.slider(
+                        "Test Set Size (%)", 
+                        min_value=10, 
+                        max_value=40, 
+                        value=20
+                    )
+                
+                # Prepare data
+                X = data[features]
+                y = data['Outcome']
+                
+                # Split data
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size/100, random_state=42
+                )
+                
+                # Train model
+                with st.spinner("Training model..."):
+                    if model_type == "Logistic Regression":
+                        model = LogisticRegression(random_state=42)
+                    else:
+                        model = RandomForestClassifier(
+                            n_estimators=100,
+                            random_state=42
+                        )
+                    
+                    model.fit(X_train, y_train)
+                    
+                    # Display validation results
+                    display_model_validation(
+                        data=data,
+                        model=model,
+                        features=features,
+                        test_size=test_size/100
+                    )
+            else:
+                st.error("Please ensure the diabetes dataset is available")
+                
+        except Exception as e:
+            st.error(f"Error in model validation: {str(e)}")
+            st.error("Please check your data and try again")
 
 if __name__ == "__main__":
     main()
