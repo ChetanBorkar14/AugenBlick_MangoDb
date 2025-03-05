@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Causal Inference on Diabetes Treatment</title>
+
 </head>
 <body>
     <h1>⚕️ Causal Inference on Diabetes Treatment</h1>
